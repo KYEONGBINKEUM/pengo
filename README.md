@@ -6,7 +6,7 @@ PSD 파일 하나로 HTML · CSS 코드를 자동으로 만들어 주는 Windows
 
 ## 설치
 
-1. [Releases](https://github.com/KYEONGBINKEUM/psd-publisher/releases)에서 `PSD-Publisher-Setup-x.y.z.exe` 를 내려받아 실행합니다.
+1. [Releases](https://github.com/KYEONGBINKEUM/pengo/releases)에서 `PSD-Publisher-Setup-x.y.z.exe` 를 내려받아 실행합니다.
 2. 설치가 끝나면 시작 메뉴에서 **Pengo**를 찾을 수 있습니다. (우클릭 → 작업 표시줄에 고정)
 
 > 코드 서명이 없는 파일이라 처음 실행할 때 Windows SmartScreen 경고가 나올 수 있습니다. "추가 정보" → "실행"을 누르세요. 파일이 맞는지 확인하려면 함께 올라온 `.sha256` 파일의 값과 비교하면 됩니다.
