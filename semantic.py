@@ -782,6 +782,35 @@ class Semantic:
         if outer: return Part(f'<div class="{outer}">{core}</div>', bb, '.' + outer)
         return Part(core, bb, '.' + cls)
 
+    def render_split_card(self, g, p, cls, d, bg, gb, src, cb, over, below):
+        """사진 영역(.thumb) + 글자 영역(.info) 두 칸 카드."""
+        gx0, gy0, gx1, gy1 = gb; ax0, ay0, ax1, ay1 = cb
+        m = re.search(r'border:\s*([\d.]+)px', ' '.join(d)); bw = m.group(1) if m else '0'
+        d = [x for x in d if not x.startswith('height:')] + ['min-height:' + px(gy1 - gy0), 'overflow:hidden']
+        tcls = self.name('thumb', p); tp = p + ['.' + tcls]
+        small = (gx1 - gx0) < 600 * self.S; self.card_depth += small
+        parts = [q for q in (self.render(('leaf', it), tp) for it in over) if q.html]
+        self.set_sels(parts, shift=1)    # .bg 가 첫 자식
+        q5 = lambda v: round(v / (5 * self.S)) * 5 * self.S   # 카드마다 1~2px 흔들리는 값은 5px 단위로 맞춰 같은 CSS 로 묶이게
+        thumb_h = q5(ay1 - gy0)
+        self.rule(tp, ['position:relative', 'overflow:hidden'] + ([f'margin:-{bw}px -{bw}px 0', f'height:{px(thumb_h)}'] if bw != '0' else [f'height:{px(thumb_h)}']))
+        self.rule(tp + ['.bg'], ['position:absolute', 'z-index:0', 'left:0', 'top:0', 'width:100%', 'height:100%'])
+        self.rule(tp + ['.bg', '.pic'], ['display:block', 'width:100%', 'height:100%', 'object-fit:cover'])
+        for q in parts:
+            pos = [f'right:{px(ax1 - q.bbox[2])}'] if (q.bbox[0] + q.bbox[2]) / 2 > (ax0 + ax1) / 2 + 0.2 * (ax1 - ax0) else [f'left:{px(q.bbox[0] - ax0)}']
+            self.rule(tp + [q.sel], ['position:absolute', 'z-index:1', 'top:' + px(q.bbox[1] - gy0)] + pos)
+        self.reg(tp, (gx0, gy0, gx1, ay1))
+        thumb = f'<div class="{tcls}"><div class="bg"><img class="pic" src="{src}" alt=""></div>' + ''.join(q.html for q in parts) + '</div>'
+        icls = self.name('info', p); ip = p + ['.' + icls]
+        q = self.render(self.cut(below), ip)
+        self.card_depth -= small
+        self.rule(ip, [f'padding:{px(round(max(0, q.bbox[1] - ay1) / (2 * self.S)) * 2 * self.S)} 0 0 {px(max(0, q.bbox[0] - gx0 - float(bw) * self.S))}', 'box-sizing:border-box'])
+        self.reg(ip, q.bbox)
+        self.reg(p, gb)
+        self.rule(p, d)
+        self.notes.append(f'{" > ".join(p)}: 사진 영역(.{tcls})과 글자 영역(.{icls})으로 나눠 만들었습니다.')
+        return Part(f'<div class="{cls}">{thumb}<div class="{icls}">{q.html}</div></div>', gb, '.' + cls, 'card')
+
     def render_group(self, g, path, role=None):
         if id(g) in self.chains:  # 그룹 전체에 색 입히기 등 클리핑이 걸린 경우(로고 등): 한 장의 이미지로 저장
             par = g.parent; keep = {id(par), id(g)} | {id(c) for c in self.chains[id(g)]} | {id(d) for d in g.descendants()}
@@ -832,6 +861,14 @@ class Semantic:
             src = self.save_img(im, 'bg', self.rid(g)) if im is not None else None
             if src:
                 ax0, ay0, ax1, ay1 = cb
+                # 카드 위쪽을 사진이 가로로 꽉 채우고 그 아래에 글자가 이어지면: 위(사진 영역) / 아래(글자 영역) 두 칸으로 나눈다.
+                # 사진 위에 얹힌 배지·버튼은 사진 영역 안에서만 absolute, 글자는 일반 흐름이라 위쪽에 큰 margin-top 이 생기지 않는다.
+                if (bg is not None and tree and not full and ax0 <= gx0 + 3 * self.S and ax1 >= gx1 - 3 * self.S and ay0 <= gy0 + 3 * self.S
+                        and (ay1 - ay0) < 0.85 * (gy1 - gy0)):
+                    over = [i for i in its if (i['bbox'][1] + i['bbox'][3]) / 2 < ay1]
+                    below = [i for i in its if i not in over]
+                    if below:
+                        return self.render_split_card(g, p, cls, d, bg, (gx0, gy0, gx1, gy1), src, cb, over, below)
                 pos = [f'left:{px(ax0 - gx0)}', f'top:{px(ay0 - gy0)}', f'width:{px(ax1 - ax0)}', f'height:{px(ay1 - ay0)}']  # 번짐 여백 1px은 overflow로 잘림
                 self.rule(p + ['.bg'], ['position:absolute', 'z-index:0'] + pos)
                 self.rule(p + ['.bg', '.pic'], ['display:block', 'width:100%', 'height:100%', 'object-fit:cover'])
@@ -995,9 +1032,21 @@ class Semantic:
             self.sec_ranges[HID] = (0, hh, 'header')
             top = f'<header id="{HID}"><div class="{WCLS}">{q.html}</div></header>'
         prev = hdr_bottom; bodies = []; first = True
+        # 세로로 겹치고 가로로는 나란한 그룹(왼쪽 필터 + 오른쪽 목록 등)은 위아래로 쌓지 않고 한 섹션 안에 좌우로 놓는다
+        regular = lambda x: x is not header and not fixed(x) and not re.search(r'foot|푸터', x.name, re.I)
+        def beside(a, b):
+            ov = min(a.bbox[3], b.bbox[3]) - max(a.bbox[1], b.bbox[1])
+            xo = min(a.bbox[2], b.bbox[2]) - max(a.bbox[0], b.bbox[0])
+            return ov >= 0.3 * min(a.bbox[3] - a.bbox[1], b.bbox[3] - b.bbox[1]) and xo <= 2 * self.S
+        clusters = []
         for g in groups:
+            if clusters and regular(g) and regular(clusters[-1][0]) and all(not (min(m.bbox[0], m.bbox[2]) < 0) for m in clusters[-1])                     and any(beside(m, g) for m in clusters[-1]) and all(min(m.bbox[2], g.bbox[2]) - max(m.bbox[0], g.bbox[0]) <= 2 * self.S for m in clusters[-1]):
+                clusters[-1].append(g)
+            else: clusters.append([g])
+        for cl in clusters:
+            g, extras = cl[0], cl[1:]
             if g is header: continue
-            done += 1
+            done += len(cl)
             self.emit(44 + 36 * done / total, f'변환 중: {re.sub(r"[^0-9A-Za-z가-힣 ._-]", "", g.name)[:30]} ({done}/{total})')
             if fixed(g):  # 오른쪽 고정 퀵메뉴
                 self.sec = 'quick'
@@ -1016,9 +1065,10 @@ class Semantic:
             first = first and is_footer
             self.sec = sid
             self.sec_names[sid] = re.sub(r'[^0-9A-Za-z가-힣 ._-]', '', g.name)
-            self.sec_ranges[sid] = (g.bbox[1], g.bbox[3], self.sec_names[sid])
+            self.sec_ranges[sid] = (min(x.bbox[1] for x in cl), max(x.bbox[3] for x in cl), self.sec_names[sid])
+            if extras: self.notes.append(f'{"#" + sid}: 나란히 놓인 그룹 {", ".join(chr(34) + e.name + chr(34) for e in extras)} 를 같은 영역에 좌우로 배치했습니다.')
             bg_decl, bg_skip, bg_box = self.section_bg(g)
-            its = self.merge_blend_cards(self.lift_lines([i for i in (self.item(c) for c in g if self.vis(c) and id(c) not in bg_skip) if i]))
+            its = self.merge_blend_cards(self.lift_lines([i for i in (self.item(c) for c in list(g) + extras if self.vis(c) and id(c) not in bg_skip) if i]))
             if not its: continue
             w = max(i['bbox'][2] for i in its) - min(i['bbox'][0] for i in its)
             wide = w > (INNER + 10) * self.S; box = WCLS if wide else BCLS
@@ -1029,7 +1079,8 @@ class Semantic:
             top0, bot0 = (bg_box[1], bg_box[3]) if bg_box else (prev, y1)
             if top0 > y0: top0 = y0
             if bot0 < y1: bot0 = y1
-            self.rules[('#' + sid,)] = [f'margin-top:{px(max(0, top0 - prev))}', f'padding-top:{px(max(0, y0 - max(top0, prev)))}', f'padding-bottom:{px(max(0, bot0 - y1))}', 'overflow:hidden'] + bg_decl
+            start = max(top0, prev - 60 * self.S)   # 앞 섹션 아래쪽(그림자 여백 등)과 조금 겹친 시안은 음수 margin 으로 PSD 위치에 맞춘다
+            self.rules[('#' + sid,)] = [f'margin-top:{px(start - prev)}', f'padding-top:{px(max(0, y0 - start))}', f'padding-bottom:{px(max(0, bot0 - y1))}', 'overflow:hidden'] + bg_decl
             cw = (WIDE if wide else INNER) * self.S
             left_over, right_over = x0 - base < -2 * self.S, x1 > base + cw + 2 * self.S
             if (left_over or right_over) and abs((x0 + x1) / 2 - self.W / 2) <= 4 * self.S and q.kind not in ('text', 'btn'):
