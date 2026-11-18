@@ -37,12 +37,15 @@ const OK: Color32 = Color32::from_rgb(74, 222, 128);
 const ERR: Color32 = Color32::from_rgb(248, 113, 113);
 const TERM_BG: Color32 = Color32::from_rgb(8, 8, 10);
 
-const QUALITIES: [(&str, &str, &str); 4] = [
+const QUALITIES: [(&str, &str, &str); 5] = [
     ("최고 화질", "lossless", "WebP 무손실 · 용량 큼"),
     ("PNG", "png", "PNG 무손실"),
     ("높음", "high", "WebP 95"),
     ("보통", "normal", "WebP 85 · 용량 작음"),
+    ("자동", "auto", "사진은 작게 · 그래픽은 선명하게"),
 ];
+/// 다른 형식으로도 내보내기 (엔진 --target 값, 화면 이름)
+const TARGETS: [(&str, &str); 5] = [("html", "정적 HTML"), ("react", "React"), ("vue", "Vue"), ("wordpress", "워드프레스 테마"), ("gnuboard", "그누보드5 테마")];
 const SCALES: [(&str, &str); 3] = [("1배", "PSD 크기 그대로"), ("2배", "고해상도용 · 코드는 동일"), ("3배", "초고해상도용")];
 const CSS_ROUNDS: [(&str, &str, &str); 2] = [("깔끔하게", "tidy", "5px·2px 단위로 정리"), ("정확하게", "exact", "PSD 값에 가깝게")];
 const STAGES: [(&str, &str, f32); 4] = [("분석", "", 0.40), ("변환", "", 0.82), ("작성", "", 0.97), ("압축", "", 1.01)];
@@ -78,6 +81,13 @@ struct App {
     quality: usize,
     img_scale: usize,
     css_round: usize,
+    a11y: bool,
+    repeat: bool,
+    forms: bool,
+    targets: [bool; 5],
+    presets: Vec<String>,
+    preset_name: String,
+    preset_msg: String,
     feed: Vec<(String, String, bool)>, // (시간, 내용, 엔진 로그 여부)
     step: String,
     target: f32,
@@ -208,6 +218,23 @@ fn draw_gear(p: &egui::Painter, c: egui::Pos2, col: Color32) {
     }
     p.circle_stroke(c, 8.0, st);
     p.circle_stroke(c, 3.0, Stroke::new(2.0, col));
+}
+
+fn presets_dir() -> PathBuf {
+    PathBuf::from(std::env::var("APPDATA").unwrap_or_else(|_| ".".into())).join("Pengo").join("presets")
+}
+
+fn list_presets() -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(presets_dir())
+        .map(|d| d.flatten().filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|_| e.path().extension().map(|x| x == "json").unwrap_or(false))).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+fn preset_file(name: &str) -> PathBuf {
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' }).collect();
+    presets_dir().join(format!("{}.json", safe.trim()))
 }
 
 fn find_engine() -> Option<PathBuf> {
@@ -476,6 +503,13 @@ impl App {
             quality: 0,
             img_scale: 0,
             css_round: 0,
+            a11y: true,
+            repeat: true,
+            forms: true,
+            targets: [false; 5],
+            presets: list_presets(),
+            preset_name: String::new(),
+            preset_msg: String::new(),
             feed: Vec::new(),
             step: String::new(),
             target: 0.0,
@@ -604,6 +638,20 @@ impl App {
             cmd.arg("--image-quality").arg(QUALITIES[self.quality].1);
             cmd.arg("--image-scale").arg((self.img_scale + 1).to_string());
             cmd.arg("--css-round").arg(CSS_ROUNDS[self.css_round].1);
+            if !self.a11y {
+                cmd.arg("--no-a11y");
+            }
+            if !self.repeat {
+                cmd.arg("--no-repeat");
+            }
+            if !self.forms {
+                cmd.arg("--no-forms");
+            }
+            for (i, on) in self.targets.iter().enumerate() {
+                if *on {
+                    cmd.arg("--target").arg(TARGETS[i].0);
+                }
+            }
         }
         if frame_exists() {
             cmd.arg("--frame").arg(frame_dir());
@@ -665,6 +713,30 @@ impl App {
             }
             ctx.request_repaint();
         });
+    }
+
+    fn preset_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "quality": self.quality, "img_scale": self.img_scale, "css_round": self.css_round, "structure": self.structure,
+            "a11y": self.a11y, "repeat": self.repeat, "forms": self.forms, "targets": self.targets.to_vec(),
+        })
+    }
+
+    fn apply_preset(&mut self, v: &serde_json::Value) {
+        let idx = |k: &str, max: usize, cur: usize| v.get(k).and_then(|x| x.as_u64()).map(|x| (x as usize).min(max)).unwrap_or(cur);
+        self.quality = idx("quality", QUALITIES.len() - 1, self.quality);
+        self.img_scale = idx("img_scale", SCALES.len() - 1, self.img_scale);
+        self.css_round = idx("css_round", CSS_ROUNDS.len() - 1, self.css_round);
+        let b = |k: &str, cur: bool| v.get(k).and_then(|x| x.as_bool()).unwrap_or(cur);
+        self.structure = b("structure", self.structure);
+        self.a11y = b("a11y", self.a11y);
+        self.repeat = b("repeat", self.repeat);
+        self.forms = b("forms", self.forms);
+        if let Some(a) = v.get("targets").and_then(|x| x.as_array()) {
+            for (i, t) in self.targets.iter_mut().enumerate() {
+                *t = a.get(i).and_then(|x| x.as_bool()).unwrap_or(false);
+            }
+        }
     }
 
     fn cancel(&mut self) {
@@ -901,6 +973,49 @@ impl App {
     fn page_options(&mut self, ui: &mut Ui, _ctx: &egui::Context) {
         self.heading(ui, "이렇게 만들까요?", "");
         ui.add_space(8.0);
+        // 프리셋: 옵션 묶음을 이름 붙여 저장해 두고 불러온다
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(RichText::new("프리셋").size(13.0).color(SUB));
+            let mut pick: Option<String> = None;
+            egui::ComboBox::from_id_salt("preset_pick").selected_text(if self.presets.is_empty() { "저장된 프리셋 없음" } else { "불러오기" }).width(150.0).show_ui(ui, |ui| {
+                for n in &self.presets {
+                    if ui.selectable_label(false, n).clicked() {
+                        pick = Some(n.clone());
+                    }
+                }
+            });
+            if let Some(n) = pick {
+                match std::fs::read_to_string(preset_file(&n)).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+                    Some(v) => {
+                        self.apply_preset(&v);
+                        self.preset_name = n.clone();
+                        self.preset_msg = format!("'{n}' 불러옴");
+                    }
+                    None => self.preset_msg = "프리셋을 읽지 못했어요".into(),
+                }
+            }
+            ui.add_sized([120.0, 28.0], egui::TextEdit::singleline(&mut self.preset_name).hint_text("이름").margin(vec2(8.0, 6.0)));
+            if line_btn(ui, "저장", 56.0, 28.0, INK) && !self.preset_name.trim().is_empty() {
+                let _ = std::fs::create_dir_all(presets_dir());
+                self.preset_msg = match std::fs::write(preset_file(&self.preset_name), serde_json::to_string_pretty(&self.preset_json()).unwrap_or_default()) {
+                    Ok(()) => {
+                        self.presets = list_presets();
+                        format!("'{}' 저장함", self.preset_name.trim())
+                    }
+                    Err(e) => format!("저장 실패: {e}"),
+                };
+            }
+            if line_btn(ui, "삭제", 56.0, 28.0, INK) && self.presets.iter().any(|n| *n == self.preset_name.trim()) {
+                let _ = std::fs::remove_file(preset_file(&self.preset_name));
+                self.preset_msg = format!("'{}' 삭제함", self.preset_name.trim());
+                self.presets = list_presets();
+            }
+            if !self.preset_msg.is_empty() {
+                ui.label(RichText::new(&self.preset_msg).size(12.0).color(FAINT));
+            }
+        });
+        ui.add_space(8.0);
         egui::Frame::none().fill(PANEL).rounding(22.0).inner_margin(Margin::same(24.0)).stroke(Stroke::new(1.0, LINE)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 8.0;
@@ -915,6 +1030,22 @@ impl App {
             self.opt_row(ui, "CSS 숫자", CSS_ROUNDS[self.css_round].2);
             let r: Vec<&str> = CSS_ROUNDS.iter().map(|x| x.0).collect();
             segmented(ui, "r", &mut self.css_round, &r);
+            ui.add_space(8.0);
+            self.opt_row(ui, "자동 보강", "끄면 PSD 구조 그대로");
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 18.0;
+                ui.checkbox(&mut self.a11y, "접근성·SEO");
+                ui.checkbox(&mut self.repeat, "반복 요소(ul/li)");
+                ui.checkbox(&mut self.forms, "폼·게시판");
+            });
+            ui.add_space(8.0);
+            self.opt_row(ui, "다른 형식으로도 내보내기", "결과 폴더의 targets 폴더에 만들어요");
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 18.0;
+                for (i, (_, label)) in TARGETS.iter().enumerate() {
+                    ui.checkbox(&mut self.targets[i], *label);
+                }
+            });
             ui.add_space(8.0);
             self.opt_row(ui, "저장 위치", "");
             ui.horizontal(|ui| {

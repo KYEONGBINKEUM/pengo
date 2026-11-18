@@ -99,6 +99,7 @@ class Semantic:
         self.hidden = set()  # 변환에서 제외할 레이어(헤더 하단선 등)
         self.loose_bg = {}   # 그룹 밖(루트)에 있는 전체 폭 배경 레이어 → 섹션
         self._align = {}
+        self.font_stubs = {}   # 글꼴 파일이 없는 글꼴 → 표시 이름 (css/fonts.css 의 @font-face 자리용)
         self.fonts_used = {}  # 사용한 PSD 글꼴 → 구글 폰트 이름(없으면 None)
         self.img_cnt = {}  # (섹션 id, 'img'|'bg') → 저장한 개수 (파일 이름 번호용)
         self.cur_cw = 0  # 현재 섹션 컨테이너 폭(PSD px)
@@ -339,16 +340,32 @@ class Semantic:
         return res
 
     KNOWN_FONTS = {'NotoSerifKR': ("'Noto Serif KR',serif", 'Noto+Serif+KR'), 'NotoSansKR': ("'Noto Sans KR',sans-serif", 'Noto+Sans+KR'),
-                   'SUIT': ("'SUIT',sans-serif", None), 'Roboto': ("'Roboto',sans-serif", 'Roboto')}
+                   'SUIT': ("'SUIT',sans-serif", None), 'Roboto': ("'Roboto',sans-serif", 'Roboto'),
+                   # 자주 쓰는 글꼴: 구글 폰트로 연결(또는 시스템 글꼴). 대체 글꼴 목록을 붙여 글꼴이 늦게 와도 모양이 크게 달라지지 않게 한다.
+                   'NanumGothic': ("'Nanum Gothic','Malgun Gothic',sans-serif", 'Nanum+Gothic'), 'NanumMyeongjo': ("'Nanum Myeongjo','Batang',serif", 'Nanum+Myeongjo'),
+                   'GothicA1': ("'Gothic A1','Malgun Gothic',sans-serif", 'Gothic+A1'), 'IBMPlexSansKR': ("'IBM Plex Sans KR','Malgun Gothic',sans-serif", 'IBM+Plex+Sans+KR'),
+                   'BlackHanSans': ("'Black Han Sans','Malgun Gothic',sans-serif", 'Black+Han+Sans'), 'DoHyeon': ("'Do Hyeon','Malgun Gothic',sans-serif", 'Do+Hyeon'),
+                   'Jua': ("'Jua','Malgun Gothic',sans-serif", 'Jua'), 'GowunDodum': ("'Gowun Dodum','Malgun Gothic',sans-serif", 'Gowun+Dodum'),
+                   'Inter': ("'Inter',sans-serif", 'Inter'), 'Poppins': ("'Poppins',sans-serif", 'Poppins'), 'Montserrat': ("'Montserrat',sans-serif", 'Montserrat'),
+                   'OpenSans': ("'Open Sans',sans-serif", 'Open+Sans'), 'Lato': ("'Lato',sans-serif", 'Lato'), 'Oswald': ("'Oswald',sans-serif", 'Oswald'),
+                   'PlayfairDisplay': ("'Playfair Display',serif", 'Playfair+Display'), 'Cinzel': ("'Cinzel',serif", 'Cinzel'),
+                   'MalgunGothic': ("'Malgun Gothic','Apple SD Gothic Neo',sans-serif", None), 'AppleSDGothicNeo': ("'Apple SD Gothic Neo','Malgun Gothic',sans-serif", None),
+                   'Batang': ("'Batang','AppleMyungjo',serif", None), 'Gulim': ("'Gulim',sans-serif", None), 'Dotum': ("'Dotum',sans-serif", None)}
+    _WEIGHT_TAIL = re.compile(r'(Thin|ExtraLight|UltraLight|Light|Regular|Normal|Medium|SemiBold|DemiBold|Bold|ExtraBold|UltraBold|Black|Heavy|Italic)+$')
 
     def font_decl(self, fname):
-        """PSD 글꼴 이름 → font-family. 기본 글꼴(Pretendard)은 default.css 에 있으므로 출력하지 않는다."""
+        """PSD 글꼴 이름 → font-family. 기본 글꼴(Pretendard)은 default.css 에 있으므로 출력하지 않는다.
+        알려진 글꼴은 구글 폰트로 연결하고, 모르는 글꼴은 css/fonts.css 에 @font-face 자리를 만든다."""
         fam = (fname or '').split('-')[0]
         if fam in ('', 'Pretendard'): return None
+        if fam not in self.KNOWN_FONTS:
+            t = self._WEIGHT_TAIL.sub('', fam)
+            if t and t in self.KNOWN_FONTS: fam = t
         if fam in self.KNOWN_FONTS: css, g = self.KNOWN_FONTS[fam]
         else:
             name = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', fam)
             css, g = f"'{name}',{'serif' if re.search('Serif|Myeongjo|Batang', fam) else 'sans-serif'}", None
+            self.font_stubs[fam] = name
         self.fonts_used[fam] = g
         return 'font-family:' + css
 
@@ -424,6 +441,17 @@ class Semantic:
         self.img_cnt[key] = n
         return f'{self.sec}_img{n}' if kind == 'img' else f'{self.sec}_bg' + ('' if n == 1 else str(n))
 
+    @staticmethod
+    def photo_like(image):
+        """사진처럼 색이 많은 이미지인지 (작은 아이콘·단색 그래픽은 아님). 투명한 모서리가 있어도 내용이 사진이면 사진으로 본다."""
+        if image.width * image.height < 40000: return False
+        t = image.resize((96, max(1, round(96 * image.height / image.width))))
+        if t.mode == 'RGBA':
+            from PIL import Image
+            bg = Image.new('RGB', t.size, (255, 255, 255)); bg.paste(t, mask=t.getchannel('A')); t = bg
+        c = t.convert('RGB').getcolors(maxcolors=100000)
+        return c is None or len(c) > 1500
+
     def save_img(self, image, kind, layer=None):
         """이미지 저장. quality: lossless(WebP 무손실, 기본·최대화질) / png(PNG 무손실) / high(WebP 95) / normal(WebP 85).
         img_scale>1 이면 가로·세로를 배수만큼 확대 저장(레티나용). CSS 크기는 그대로라 코드는 1배와 같다."""
@@ -432,19 +460,22 @@ class Semantic:
         base = self.img_name(kind)
         if self.img_scale > 1:
             k = self.img_scale; image = image.resize((image.width * k, image.height * k), Image.LANCZOS)
-        if self.quality == 'png':
+        if image.mode not in ('RGB', 'RGBA'): image = image.convert('RGBA')
+        if image.mode == 'RGBA' and image.getchannel('A').getextrema()[0] == 255: image = image.convert('RGB')   # 투명한 곳이 없으면 알파 채널을 버려 용량을 줄인다(화면은 똑같다)
+        q = self.quality
+        if q == 'auto': q = 'photo' if self.photo_like(image) else 'lossless'   # 사진은 손실 압축(작게), 그래픽·투명 이미지는 무손실(선명하게)
+        if q == 'png':
             ext, kw, fmt = 'png', {'optimize': True}, 'PNG'
         else:
             ext, fmt = 'webp', 'WEBP'
-            kw = {'lossless': True, 'quality': 100, 'method': 4} if self.quality == 'lossless' else {'quality': 95 if self.quality == 'high' else 85, 'method': 6}  # 무손실은 method 4: method 6보다 10배 빠르고 용량 차이 1% 미만
-        if image.mode not in ('RGB', 'RGBA'): image = image.convert('RGBA')
+            kw = {'lossless': True, 'quality': 100, 'method': 4} if q == 'lossless' else {'quality': 95 if q == 'high' else 92 if q == 'photo' else 85, 'method': 6, 'alpha_quality': 100}  # 무손실은 method 4: method 6보다 10배 빠르고 용량 차이 1% 미만
         if fmt == 'WEBP' and max(image.size) > 16383:  # WebP 크기 한계 → PNG로 대체
             ext, fmt, kw = 'png', 'PNG', {'optimize': True}
         rel = f'images/main/{base}.{ext}'
         self.emit(-1, f'이미지 저장 중: {base}.{ext}')
         image.save(d / f'{base}.{ext}', fmt, **kw)
         self.r.assets.append({'layer': layer or base, 'path': rel, 'width': image.width, 'height': image.height, 'text_removed': True,
-                              'quality': self.quality, 'image_scale': self.img_scale})
+                              'quality': q, 'image_scale': self.img_scale, 'bytes': (d / f'{base}.{ext}').stat().st_size})
         return IMGP + rel[len('images/'):]   # 서브페이지에서도 불러오도록 루트 절대경로(기본 /images/…)
 
     def leaf_img(self, l):
@@ -1177,7 +1208,7 @@ class Semantic:
             tail = [rec['sel'] or rec.get('tag') or ''] if rec else []
             sel = ' > '.join([x for x in list(path) + tail if x])
             elems.append((sel, int(bb[0]), int(bb[1]), int(bb[2] - bb[0]), int(bb[3] - bb[1])))
-        return {'header': top, 'main': main, 'footer': footer, 'quick': aside, 'layout_css': layout_css, 'main_css': main_css, 'elems': elems, 'fonts': sorted({g for g in self.fonts_used.values() if g})}
+        return {'header': top, 'main': main, 'footer': footer, 'quick': aside, 'layout_css': layout_css, 'main_css': main_css, 'elems': elems, 'fonts': sorted({g for g in self.fonts_used.values() if g}), 'font_stubs': dict(self.font_stubs)}
 
 
 # ---------- 선택자 검증용 미니 DOM ----------

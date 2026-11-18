@@ -22,9 +22,9 @@ if not exist "%EXE%" (
 
 echo 올릴 버전: v%VERSION%  ^(%REPO%^)
 if exist RELEASE_NOTES.txt (
-  gh release create v%VERSION% "%EXE%" "%EXE%.sha256" --repo %REPO% --title "PSD Publisher %VERSION%" --notes-file RELEASE_NOTES.txt
+  gh release create v%VERSION% "%EXE%" "%EXE%.sha256" --repo %REPO% --title "Pengo %VERSION%" --notes-file RELEASE_NOTES.txt
 ) else (
-  gh release create v%VERSION% "%EXE%" "%EXE%.sha256" --repo %REPO% --title "PSD Publisher %VERSION%" --notes "PSD Publisher %VERSION%"
+  gh release create v%VERSION% "%EXE%" "%EXE%.sha256" --repo %REPO% --title "Pengo %VERSION%" --notes "Pengo %VERSION%"
 )
 if errorlevel 1 (
   echo.

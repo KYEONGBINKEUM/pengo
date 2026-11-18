@@ -4,6 +4,7 @@ import argparse, collections, hashlib, html, json, math, re, shutil, zipfile
 from pathlib import Path, PurePosixPath
 from string import Template
 import tinycss2
+import enhance
 from psd_tools import PSDImage
 
 import sys
@@ -430,7 +431,7 @@ def load_conv(frame):
     return warn
 
 
-def write_base_site(out,parts,title,frame=None):
+def write_base_site(out,parts,title,frame=None,enh=None):
     """회사 기본틀(templates/base)을 그대로 사용하고 그 위에 생성 결과를 얹는다.
     inc/head.php·inc/bottom.php·inc/top.php, css/default.css(폰트 정의·reset)는 기본틀 파일.
     header → inc/top.php, footer(+퀵메뉴) → inc/bottom.php, header·footer CSS → css/layout.css, 섹션 CSS → css/main.css."""
@@ -455,6 +456,18 @@ def write_base_site(out,parts,title,frame=None):
     if mlogo:
         header_ph=header_ph[:mlogo[0]]+'<h1 id="logo" class="'+sem.LC+'"><a href="/">'+mlogo[2]+'</a></h1>'+header_ph[mlogo[1]:]
         parts['layout_css']+='\n#logo a{display: contents;}\n'
+    # 결과 다듬기: 접근성·SEO·반복 요소(ul/li)·폼 (실패해도 원본 유지)
+    eo=dict(enh or {}); ctx={'title':title,'first_section':[sem.CONV['visual_id']]}
+    new,estats,ecss,emeta=enhance.enhance({'main':parts['main'],'header':header_ph,'footer':parts['footer'],'quick':parts['quick']},ctx,eo)
+    parts['main'],header_ph,parts['footer'],parts['quick']=new['main'],new['header'],new['footer'],new['quick']
+    parts['main_css']=parts['main_css']+('\n'+ecss if ecss else ''); parts['_enh']=estats
+    if emeta: head=head.replace('</title>','</title>\n'+emeta.rstrip('\n'),1)
+    if parts.get('font_stubs'):   # 글꼴 파일이 없는 글꼴: @font-face 자리를 만든다
+        fcss='@charset "utf-8";\n/* 웹폰트 파일(woff2)을 /fonts/ 폴더에 넣으면 적용됩니다. 파일이 없으면 시스템 글꼴로 표시됩니다. */\n'+''.join(
+            f"@font-face{{font-family:'{n}';src:local('{n}'),url('/fonts/{f}.woff2') format('woff2');font-weight:100 900;font-display:swap;}}\n" for f,n in sorted(parts['font_stubs'].items()))
+        write(out/'css/fonts.css',fcss); (out/'fonts').mkdir(exist_ok=True)
+        write(out/'fonts/README.txt','이 폴더에 웹폰트 파일을 넣으세요.\n'+''.join(f'  {f}.woff2  ← {n}\n' for f,n in sorted(parts['font_stubs'].items())))
+        head=head.replace('</head>','<link rel="stylesheet" type="text/css" href="/css/fonts.css?v=1" />\n</head>',1)
     link=(base/'inc'/'link.php').read_text(encoding='utf-8')
     if nav_php:
         write(out/'inc/nav.php', nav_php)
@@ -464,7 +477,7 @@ def write_base_site(out,parts,title,frame=None):
         j=link.rfind('}',0,link.rfind('</script>'))
         link=link[:j]+add+'\r\n'+link[j:]
     write(out/'inc/link.php', link)
-    top='<!-- header -->\n'+esc(pretty_html(header_ph)).replace(NAV_PH,'<?php include "nav.php"; ?>')+'\n<!-- //header -->'
+    top='<!-- header -->\n'+(enhance.SKIP_LINK if eo.get('a11y',True) else '')+esc(pretty_html(header_ph)).replace(NAV_PH,'<?php include "nav.php"; ?>')+'\n<!-- //header -->'
     footer='<!-- footer -->\n'+esc(pretty_html(parts['footer']))+'\n<!-- //footer -->'
     if parts['quick']: footer+='\n\n<!-- quick -->\n'+esc(pretty_html(parts['quick']))+'\n<!-- //quick -->'
     btxt=(base/'inc'/'bottom.php').read_text(encoding='utf-8')
@@ -491,7 +504,7 @@ def write_base_site(out,parts,title,frame=None):
     write(out/'preview.html',prev)
     shutil.rmtree(base,ignore_errors=True)
 
-def build(psd_path,out,source_zip=None,rules_path=None,recipe_path=None,structure=False,only=None,img_quality='lossless',psd_scale=1,img_scale=1,css_round='tidy',frame=None):
+def build(psd_path,out,source_zip=None,rules_path=None,recipe_path=None,structure=False,only=None,img_quality='lossless',psd_scale=1,img_scale=1,css_round='tidy',frame=None,enh=None,targets=None):
     prog(1, '준비하는 중')
     conv_warn=load_conv(frame)
     out=Path(out).resolve()
@@ -514,7 +527,7 @@ def build(psd_path,out,source_zip=None,rules_path=None,recipe_path=None,structur
     elif structure:
         from semantic import Semantic
         sm=Semantic(r,only,img_quality,psd_scale,img_scale,css_round); sm.emit=prog; parts=sm.build(out); r.sec_ranges=sm.sec_ranges; r.elems=parts.get('elems',[]); mode='structure'; title=Path(psd_path).stem
-        r.issues.extend(sm.notes); r.issues.extend(conv_warn); prog(88, '기본틀(inc/·css/)에 맞춰 파일을 쓰는 중'+(' (내 기본틀 사용)' if frame else '')); write_base_site(out,parts,title,frame)
+        r.issues.extend(sm.notes); r.issues.extend(conv_warn); prog(88, '기본틀(inc/·css/)에 맞춰 파일을 쓰는 중'+(' (내 기본틀 사용)' if frame else '')); write_base_site(out,parts,title,frame,enh); r.enh_stats=parts.get('_enh',{}); r.font_stubs=parts.get('font_stubs',{})
     else: top,body,bottom=r.draft(); mode='automatic-draft'; title=Path(psd_path).stem
     if mode!='structure':
         for name in (('default.css','layout.css') if mode=='structure' else ('default.css','layout.css','main.css')):
@@ -538,7 +551,17 @@ def build(psd_path,out,source_zip=None,rules_path=None,recipe_path=None,structur
     if match_pct is None: r.issues.append('PSD 일치율을 측정하지 못했습니다(Edge 또는 Chrome이 필요합니다).')
     else: r.issues.append(f'PSD 합성본과의 화면 일치율: {match_pct:.1f}% (화면 캡처와 픽셀 비교, 글꼴·번짐 차이 포함) · 다른 구간 {n_mismatch}곳은 analysis/mismatch-report.html 참고')
     fonts=sorted({run['font'] for row in manifest['layers'] for run in row.get('runs',[])})
-    r.issues.extend(['웹폰트 파일 미포함: 시스템 대체 글꼴로 표시됩니다. 실제 폰트 확보 후 @font-face를 연결하세요.', 'PSD의 문구는 출처 그대로이며 현재 운영 일정이나 실제 신청 상태를 뜻하지 않습니다.', '실제 URL·DB·로그인·신청 처리 및 숨은 슬라이드 콘텐츠는 생성하지 않습니다.'])
+    st=getattr(r,'enh_stats',{})
+    if st:
+        bits=[f'{lab} {st[k]}' for k,lab in (('alt','이미지 대체 텍스트'),('lazy','지연 로딩 이미지'),('aria','아이콘 링크 라벨'),('repeat','반복 요소 ul/li'),('time','날짜 time 태그'),('field','입력칸'),('button','제출 버튼'),('board','게시판 표 구조')) if st.get(k)]
+        if bits: r.issues.append('결과 다듬기: '+' · '.join(bits)+(f" · 장식 이미지 {st['decor']}(alt 비움)" if st.get('decor') else ''))
+        r.issues.extend('결과 다듬기 건너뜀: '+e for e in st.get('errors',[]))
+    stubs=getattr(r,'font_stubs',{})
+    imgs=[a for a in r.assets if a.get('bytes')]
+    if imgs: r.issues.append(f"이미지 {len(imgs)}개, 합계 {sum(a['bytes'] for a in imgs)/1048576:.1f}MB")
+    if stubs: r.issues.append('웹폰트 파일 필요: '+', '.join(sorted(stubs.values()))+' → fonts/ 폴더에 woff2 파일을 넣으면 적용됩니다 (css/fonts.css 에 @font-face 준비됨).')
+    else: r.issues.append('웹폰트: 구글 폰트·기본 폰트로 연결되어 있습니다.')
+    r.issues.extend(['PSD의 문구는 출처 그대로이며 현재 운영 일정이나 실제 신청 상태를 뜻하지 않습니다.', '실제 URL·DB·로그인·신청 처리 및 숨은 슬라이드 콘텐츠는 생성하지 않습니다.'])
     report={'mode':mode,'match_percent':None if match_pct is None else round(match_pct,2),'psd_sha256':manifest['source_sha256'],'canvas':[psd.width,psd.height],
             'counts':manifest['counts'],'fonts':fonts,'assets':r.assets,'text_bindings':r.bindings,
             'unmapped_visible_text':[row['id'] for row in manifest['layers'] if row['kind']=='type' and row['effective_visible'] and row['id'] not in {b['layer'] for b in r.bindings}],
@@ -546,6 +569,11 @@ def build(psd_path,out,source_zip=None,rules_path=None,recipe_path=None,structur
     prog(94, '변환 보고서를 작성하는 중')
     save_json(out/'analysis/build-report.json',report)
     write(out/'README.txt','생성 결과\npreview.html: 더블클릭 미리보기\nindex.php: PHP 서버용\nanalysis/layers.json: PSD 원본 수치 및 텍스트 스타일\nanalysis/company-rules.json: 기존 소스 관찰 규칙\nanalysis/build-report.json: 변환 범위와 미연결 항목\n\n'+'\n'.join(r.issues))
+    for tg in (targets or []):
+        try:
+            import targets as tgm
+            prog(95, f'{tgm.LABELS.get(tg,tg)} 형식으로 내보내는 중'); tgm.export(tg,out,title)
+        except Exception as e: print(f'내보내기 실패({tg}): {e}',flush=True)
     prog(97, 'ZIP 파일로 압축하는 중')
     archive=shutil.make_archive(str(out)+'-site','zip',out)
     prog(100, '완료')
@@ -570,10 +598,10 @@ def main():
     sub=p.add_subparsers(dest='command',required=True)
     x=sub.add_parser('export-frame',help='내장 회사 기본틀을 편집 가능한 폴더로 꺼낸다'); x.add_argument('--out',required=True)
     a=sub.add_parser('analyze-style'); a.add_argument('zip'); a.add_argument('--out',required=True)
-    b=sub.add_parser('build'); b.add_argument('psd'); b.add_argument('--out',required=True); b.add_argument('--source-zip'); b.add_argument('--rules'); b.add_argument('--recipe'); b.add_argument('--structure',action='store_true',help='의미 구조 변환(통이미지 대신 요소별 HTML/CSS)'); b.add_argument('--only',action='append',help='이름에 포함된 그룹만 변환(여러 번 지정 가능)'); b.add_argument('--image-quality',choices=['lossless','png','high','normal'],default='lossless',help='이미지 저장: lossless=WebP 무손실(최대화질·기본), png=PNG 무손실, high=WebP 95, normal=WebP 85'); b.add_argument('--psd-scale',type=int,default=1,choices=[1,2,3,4],help='PSD가 몇 배 크기로 만들어졌는지(2x 시안이면 2). 모든 CSS 수치를 이 값으로 나눠 1배 시안과 같은 코드를 만든다'); b.add_argument('--image-scale',type=int,default=1,choices=[1,2,3,4],help='이미지를 몇 배 크기로 저장할지(레티나용). CSS 크기는 그대로'); b.add_argument('--frame',help='기본틀 폴더(없으면 내장 회사 기본틀). 이 폴더의 파일이 기본틀을 덮어쓰고, pengo-rules.json 으로 이름·폭 규칙을 바꾼다'); b.add_argument('--css-round',choices=['tidy','exact'],default='tidy',help='CSS 숫자 정리: tidy=간격을 5px·2px 단위로(깔끔), exact=소수점만 정수로(PSD에 가깝게)')
+    b=sub.add_parser('build'); b.add_argument('psd'); b.add_argument('--out',required=True); b.add_argument('--source-zip'); b.add_argument('--rules'); b.add_argument('--recipe'); b.add_argument('--structure',action='store_true',help='의미 구조 변환(통이미지 대신 요소별 HTML/CSS)'); b.add_argument('--only',action='append',help='이름에 포함된 그룹만 변환(여러 번 지정 가능)'); b.add_argument('--image-quality',choices=['lossless','png','high','normal','auto'],default='lossless',help='이미지 저장: lossless=WebP 무손실(최대화질·기본), png=PNG 무손실, high=WebP 95, normal=WebP 85, auto=사진은 손실·그래픽은 무손실'); b.add_argument('--psd-scale',type=int,default=1,choices=[1,2,3,4],help='PSD가 몇 배 크기로 만들어졌는지(2x 시안이면 2). 모든 CSS 수치를 이 값으로 나눠 1배 시안과 같은 코드를 만든다'); b.add_argument('--image-scale',type=int,default=1,choices=[1,2,3,4],help='이미지를 몇 배 크기로 저장할지(레티나용). CSS 크기는 그대로'); b.add_argument('--frame',help='기본틀 폴더(없으면 내장 회사 기본틀). 이 폴더의 파일이 기본틀을 덮어쓰고, pengo-rules.json 으로 이름·폭 규칙을 바꾼다'); b.add_argument('--no-a11y',action='store_true',help='접근성·SEO 자동 보강 끄기'); b.add_argument('--no-repeat',action='store_true',help='반복 요소 ul/li 자동 인식 끄기'); b.add_argument('--no-forms',action='store_true',help='폼·게시판 요소 자동 인식 끄기'); b.add_argument('--target',action='append',choices=['html','react','vue','wordpress','gnuboard'],help='PHP 외 출력 형식을 함께 만든다(여러 번 지정 가능)'); b.add_argument('--css-round',choices=['tidy','exact'],default='tidy',help='CSS 숫자 정리: tidy=간격을 5px·2px 단위로(깔끔), exact=소수점만 정수로(PSD에 가깝게)')
     args=p.parse_args()
     if args.command=='export-frame': export_frame(args.out)
     elif args.command=='analyze-style': save_json(args.out,analyze_zip(args.zip))
-    else: build(args.psd,args.out,args.source_zip,args.rules,args.recipe,args.structure,args.only,args.image_quality,args.psd_scale,args.image_scale,args.css_round,args.frame)
+    else: build(args.psd,args.out,args.source_zip,args.rules,args.recipe,args.structure,args.only,args.image_quality,args.psd_scale,args.image_scale,args.css_round,args.frame,{'a11y':not args.no_a11y,'repeat':not args.no_repeat,'forms':not args.no_forms},args.target)
 
 if __name__=='__main__': main()

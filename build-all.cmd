@@ -15,7 +15,7 @@ echo.
 echo [1/4] 변환 엔진 묶는 중 (PyInstaller)...
 .venv\Scripts\python.exe -m PyInstaller --clean --noconfirm --onedir --console --name publisher-engine ^
   --add-data "templates;templates" --add-data "company-rules.json;." ^
-  --hidden-import semantic --hidden-import mismatch --collect-all psd_tools --collect-all tinycss2 publisher.py >build-engine.log 2>&1
+  --hidden-import semantic --hidden-import mismatch --hidden-import enhance --hidden-import targets --collect-all psd_tools --collect-all tinycss2 publisher.py >build-engine.log 2>&1
 if errorlevel 1 goto fail
 
 echo [2/4] 화면 프로그램 빌드 중 (Rust)...
