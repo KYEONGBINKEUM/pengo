@@ -228,9 +228,13 @@ SUBMIT = re.compile(r'^(문의\s*하기|신청\s*하기|신청|접수|등록|전
 BOARD_HEAD = ('번호', '제목', '작성자', '글쓴이', '날짜', '작성일', '등록일', '조회', '조회수', '첨부')
 
 
-def _field_kind(label):
+def _field_kind(label, loose=False):
+    """라벨 문구가 입력칸 이름인지. 짝 찾기(loose=False)는 "이름"·"연락처 번호"처럼 문구 전체가 이름일 때만(예: "날짜 설정" 같은 링크 글자는 제외)."""
+    lab = re.sub(r'[\s*:：]|\(필수\)|\(선택\)', '', label)
     for pat, typ, name in FIELDS:
-        if re.search(pat, label, re.I): return typ, name
+        if loose:
+            if re.search(pat, label, re.I): return typ, name
+        elif re.fullmatch(r'(?:%s)(?:번호|주소|내용|사항|명|일)?' % pat, lab, re.I): return typ, name
     return None
 
 
@@ -239,7 +243,7 @@ def _input_for(typ, name, ph, cls, used):
     if i: k = f'{name}{i + 1}'
     cl = (cls + ' ' if cls else '') + 'pg-field'
     if typ == 'textarea': return N('textarea', [['class', cl], ['name', k], ['placeholder', ph], ['aria-label', ph or name]])
-    return N('input', [['class', cl], ['type', typ], ['name', k], ['placeholder', ph], ['aria-label', ph or name]], True)
+    return N('input', [['class', cl], ['type', typ], ['name', k], ['placeholder', ph], ['aria-label', ph or name], ['size', str(max(4, int(len(ph) * 1.8) + 2))]], True)
 
 
 def forms(root, stats):
@@ -264,7 +268,7 @@ def forms(root, stats):
             if k.tag in ('p', 'span') and not has_img(k) and not k.get('role'):
                 t = clean(text_of(k))
                 if t and len(t) <= 30 and PLACEHOLDER.search(t) and len(k.kids) == 1:
-                    kind = _field_kind(t) or ('text', 'field')
+                    kind = _field_kind(t, True) or ('text', 'field')
                     typ, name = kind
                     new = _input_for(typ, name, t, ' '.join(k.classes()), used)
                     k.tag = new.tag; k.attrs = new.attrs; k.kids = new.kids; k.selfclose = new.selfclose

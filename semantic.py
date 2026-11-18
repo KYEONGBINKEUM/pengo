@@ -66,6 +66,16 @@ import os as _os
 _OPT = _os.environ.get('PSDPUB_OPT', 'snap,merge,line')  # 시험용 스위치(기본: 모두 켬)
 
 
+def snap_len(v):
+    """tidy 간격 단위(작은 값은 2·4·5·6·8·10, 10 이상은 5의 배수)로 맞춘 값(px)."""
+    sg = -1 if v < 0 else 1
+    a = abs(v)
+    if a < 2: r = round(a)
+    elif a < 10: r = min([2, 4, 5, 6, 8, 10], key=lambda c: (abs(c - a), -c))
+    else: r = int(a / 5 + 0.5) * 5
+    return sg * r
+
+
 def hexc(c): return '#%02x%02x%02x' % tuple(max(0, min(255, round(v))) for v in c)
 _SC = [1]  # PSD 배율(2x 시안이면 2): 모든 CSS 길이를 이 값으로 나눠 1배 시안과 같은 코드가 나오게 한다
 
@@ -86,6 +96,7 @@ BLEND_CSS = {'MULTIPLY': 'multiply', 'SCREEN': 'screen', 'OVERLAY': 'overlay', '
 class Semantic:
     def __init__(self, r, only=None, quality='lossless', scale=1, img_scale=1, css_round='tidy'):
         self.r, self.psd = r, r.psd
+        self._carry = 0.0   # tidy 로 간격을 맞출 때 생긴 오차를 다음 간격에 넘겨 아래로 갈수록 어긋나지 않게
         self.css_round = css_round  # 'tidy': 간격 5px·2px 단위 / 'exact': 소수점만 정수로
         self.emit = lambda pct, msg: None  # 진행 상황 알림(publisher가 연결)
         self.S = max(1, int(scale)); _SC[0] = self.S
@@ -239,7 +250,9 @@ class Semantic:
             sd = l.tagged_blocks.get_data(Tag.VECTOR_STROKE_DATA)
             if sd.get(b'strokeEnabled'):
                 sc = sd[b'strokeStyleContent'][b'Clr ']
-                d.append(f'border:{px(float(sd.get(b"strokeStyleLineWidth", 1.0)))} solid ' + hexc((sc[b'Rd  '], sc[b'Grn '], sc[b'Bl  '])))
+                bc = hexc((sc[b'Rd  '], sc[b'Grn '], sc[b'Bl  '])); bop = l.opacity / 255 * float(sd.get(b'strokeStyleOpacity', 100.0)) / 100   # 레이어 불투명도가 선에도 적용된다(검정 20% → 연한 회색)
+                if bop < 0.99: bc = 'rgba(%d,%d,%d,%g)' % (int(bc[1:3], 16), int(bc[3:5], 16), int(bc[5:7], 16), round(bop, 2))
+                d.append(f'border:{px(float(sd.get(b"strokeStyleLineWidth", 1.0)))} solid ' + bc)
         except Exception:
             pass
         try:
@@ -756,7 +769,11 @@ class Semantic:
             if line_w: d += ['width:' + px(line_w), 'max-width:100%']
             for fr, q, q0 in zip(frs[1:], parts[1:], parts):
                 g = q.bbox[1] - q0.bbox[3]
-                if g > 0.5 * self.S: self.rule(p + [fr], 'margin-top:' + px(g))
+                if g > 0.5 * self.S:
+                    if self.css_round != 'exact' and 'snap' in _OPT:
+                        want = g / self.S + self._carry; sn = max(0, snap_len(want)); self._carry = want - sn; g = sn * self.S
+                    self.rule(p + [fr], 'margin-top:' + px(g))
+                elif g < -0.5 * self.S: pass
             lf = [q.bbox[0] for q in parts]; ct = [(q.bbox[0] + q.bbox[2]) / 2 for q in parts]; rt = [q.bbox[2] for q in parts]
             if max(lf) - min(lf) <= 2 * self.S: d.append('align-items:flex-start')
             elif max(ct) - min(ct) <= 3 * self.S: d.append('align-items:center')
@@ -802,9 +819,15 @@ class Semantic:
         self.reg(tp, (gx0, gy0, gx1, ay1))
         thumb = f'<div class="{tcls}"><div class="bg"><img class="pic" src="{src}" alt=""></div>' + ''.join(q.html for q in parts) + '</div>'
         icls = self.name('info', p); ip = p + ['.' + icls]
+        self._carry = 0.0
+        first_y = min(i['bbox'][1] for i in below)
+        want = max(0, first_y - ay1) / self.S; pad_top = want * self.S
+        if self.css_round != 'exact' and 'snap' in _OPT:
+            sn = snap_len(want); self._carry = want - sn; pad_top = sn * self.S
         q = self.render(self.cut(below), ip)
+        self._carry = 0.0
         self.card_depth -= small
-        self.rule(ip, [f'padding:{px(round(max(0, q.bbox[1] - ay1) / (2 * self.S)) * 2 * self.S)} 0 0 {px(max(0, q.bbox[0] - gx0 - float(bw) * self.S))}', 'box-sizing:border-box'])
+        self.rule(ip, [f'padding:{px(pad_top)} 0 0 {px(max(0, q.bbox[0] - gx0 - float(bw) * self.S))}', 'box-sizing:border-box'])
         self.reg(ip, q.bbox)
         self.reg(p, gb)
         self.rule(p, d)
@@ -812,6 +835,7 @@ class Semantic:
         return Part(f'<div class="{cls}">{thumb}<div class="{icls}">{q.html}</div></div>', gb, '.' + cls, 'card')
 
     def render_group(self, g, path, role=None):
+        self._carry = 0.0
         if id(g) in self.chains:  # 그룹 전체에 색 입히기 등 클리핑이 걸린 경우(로고 등): 한 장의 이미지로 저장
             par = g.parent; keep = {id(par), id(g)} | {id(c) for c in self.chains[id(g)]} | {id(d) for d in g.descendants()}
             try: im = par.composite(viewport=g.bbox, force=True, layer_filter=lambda x: id(x) in keep)
@@ -1028,6 +1052,10 @@ class Semantic:
                     l_pad, r_pad = max(0, hx0), max(0, self.W - hx1)
                     pad = f'padding:0 {px(l_pad)}' if abs(l_pad - r_pad) <= 3 * self.S else f'padding:0 {px(r_pad)} 0 {px(l_pad)}'   # 좌우 여백이 다르면 각각 지정
                     self.rules[(('#' + HID), ('.' + WCLS))] += ['width:100%', pad, 'box-sizing:border-box']
+                elif hx0 - cb > 2 * self.S:   # 헤더 내용이 컨테이너보다 좁고 좌우 여백이 있는 시안: 그 여백만큼 안쪽 패딩
+                    l_pad, r_pad = hx0 - cb, max(0, (self.W - cb) - hx1)
+                    pad = f'padding:0 {px(l_pad)}' if abs(l_pad - r_pad) <= 3 * self.S else f'padding:0 {px(r_pad)} 0 {px(l_pad)}'
+                    self.rules[(('#' + HID), ('.' + WCLS))] += [pad, 'box-sizing:border-box']
             hdr_bottom = hh
             self.sec_ranges[HID] = (0, hh, 'header')
             top = f'<header id="{HID}"><div class="{WCLS}">{q.html}</div></header>'
@@ -1063,7 +1091,7 @@ class Semantic:
             elif first: sid = VID
             else: n += 1; sid = f'{SPFX}{n}'
             first = first and is_footer
-            self.sec = sid
+            self.sec = sid; self._carry = 0.0
             self.sec_names[sid] = re.sub(r'[^0-9A-Za-z가-힣 ._-]', '', g.name)
             self.sec_ranges[sid] = (min(x.bbox[1] for x in cl), max(x.bbox[3] for x in cl), self.sec_names[sid])
             if extras: self.notes.append(f'{"#" + sid}: 나란히 놓인 그룹 {", ".join(chr(34) + e.name + chr(34) for e in extras)} 를 같은 영역에 좌우로 배치했습니다.')
