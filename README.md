@@ -23,3 +23,12 @@ PSD 파일 하나로 HTML · CSS 코드를 자동으로 만들어 주는 Windows
 ## 라이선스
 
 GPL-3.0-or-later
+
+## 소스 코드
+
+이 저장소에 전체 소스가 들어 있습니다.
+
+- `publisher.py`, `semantic.py`, `mismatch.py`: PSD → HTML/PHP + CSS 변환 엔진 (Python)
+- `gui-rust/`: 화면 프로그램 (Rust, egui)
+- `templates/base`: 기본 틀
+- `build-all.cmd`: 엔진(PyInstaller) → 화면(Rust) → 설치 파일(Inno Setup) 빌드. 빌드하려면 `tools\InnoSetup`에 Inno Setup 6이 필요합니다.

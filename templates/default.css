@@ -1,0 +1,12 @@
+@charset "utf-8";
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{--color1:{{brand_color}};--ink:#161b22;--muted:#777;}
+body{font-family:{{font_family}};color:var(--ink);font-size:16px;line-height:1.5;word-break:keep-all;}
+img{max-width:100%;vertical-align:middle;}
+a{color:inherit;text-decoration:none;}
+button{font:inherit;cursor:pointer;border:0;background:none;color:inherit;}
+ul{list-style:none;}
+button:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--color1);outline-offset:5px;}
+[hidden]{display:none!important;}
+html{scroll-behavior:smooth;}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto;}}
